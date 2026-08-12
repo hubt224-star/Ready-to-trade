@@ -1,3 +1,6 @@
 streamlit
 pandas
 numpy
+streamlit-autorefresh
+smartapi-python
+pyotp
