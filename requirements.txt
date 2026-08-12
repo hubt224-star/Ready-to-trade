@@ -1,9 +1,6 @@
 streamlit
+yfinance
 pandas
+pandas-ta
 numpy
-streamlit-autorefresh
-smartapi-python
-logzero
-websocket-client
-pyotp
 
