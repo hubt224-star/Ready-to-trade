@@ -2,147 +2,99 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# Page Configuration
-st.set_page_config(page_title="Institutional Trading Dashboard", layout="wide")
+# 1. Page Configuration
+st.set_page_config(page_title="Pro Quant Terminal v4.0", layout="wide")
 
-st.title("🎯 Institutional Trading & Signal Engine")
-st.caption("Filtered Engine: Multi-EMA Trend + Wilder's RSI + MACD + Dynamic ATR Risk Engine")
-
-# --- Sidebar Controls ---
-st.sidebar.header("⚙️ Execution Settings")
-timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h", "1d"], index=1)
-
+# 2. Assets Configuration
 ASSETS = {
-    "Crude Oil (Futures)": "CL=F",
+    "NIFTY 50": "^NSEI",
+    "SENSEX": "^BSESN",
+    "BANK NIFTY": "^NSEBANK",
     "Gold (Futures)": "GC=F",
     "Silver (Futures)": "SI=F",
-    "Natural Gas (Futures)": "NG=F",
-    "NIFTY 50": "^NSEI",
-    "BANK NIFTY": "^NSEBANK"
+    "Crude Oil (Futures)": "CL=F",
+    "Natural Gas (Futures)": "NG=F"
 }
 
-selected_asset_name = st.sidebar.selectbox("Select Asset", list(ASSETS.keys()))
-ticker = ASSETS[selected_asset_name]
+st.title("🏛️ Institutional Quant Trading Engine v4.0")
+st.sidebar.header("🛠️ Market Configuration")
+selected_name = st.sidebar.selectbox("Select Asset", list(ASSETS.keys()))
+ticker = ASSETS[selected_name]
+timeframe = st.sidebar.selectbox("Timeframe", ["5m", "15m", "1h", "1d"], index=1)
 
-# --- Accurate Indicator Functions ---
-
-def calculate_rsi(series, period=14):
-    """Accurate Wilder's Smoothing RSI"""
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, period=14):
-    """Average True Range for Dynamic SL/Target"""
-    high_low = df['High'] - df['Low']
-    high_cp = np.abs(df['High'] - df['Close'].shift())
-    low_cp = np.abs(df['Low'] - df['Close'].shift())
-    df_tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    return df_tr.ewm(alpha=1/period, adjust=False).mean()
-
-# --- Data Fetching & Processing ---
+# 3. Robust Data Processing
 @st.cache_data(ttl=60)
-def fetch_data(symbol, tf):
-    period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
-    df = yf.download(symbol, period=period_map[tf], interval=tf)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+def fetch_and_process(ticker, tf):
+    try:
+        period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
+        df = yf.download(ticker, period=period_map[tf], interval=tf)
+        if df.empty: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # Indicators
+        df['EMA20'] = df['Close'].ewm(span=20).mean()
+        df['EMA50'] = df['Close'].ewm(span=50).mean()
+        df['EMA200'] = df['Close'].ewm(span=200).mean()
+        
+        # RSI Wilder's
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14).mean()
+        loss = -delta.where(delta < 0, 0).ewm(alpha=1/14).mean()
+        df['RSI'] = 100 - (100 / (1 + gain/loss))
+        
+        # ATR
+        tr = pd.DataFrame({'a': df['High']-df['Low'], 'b': abs(df['High']-df['Close'].shift()), 'c': abs(df['Low']-df['Close'].shift())}).max(axis=1)
+        df['ATR'] = tr.ewm(span=14).mean()
+        
+        return df
+    except Exception as e:
+        return None
+
+# 4. Signal Engine Logic
+def get_signal_status(df):
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
     
-    # Technical Indicators
-    df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['RSI'] = calculate_rsi(df['Close'])
-    df['ATR'] = calculate_atr(df)
+    # Logic: Buy if Price > EMA200 & Price > EMA50 & RSI < 65 & Bullish Cross
+    if curr['Close'] > curr['EMA200'] and curr['EMA20'] > curr['EMA50'] and 40 < curr['RSI'] < 65:
+        return "STRONG BUY 🟢", "success", round(curr['Close'] - (curr['ATR']*1.5), 2), round(curr['Close'] + (curr['ATR']*3), 2)
     
-    # MACD Calculation
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    # Logic: Sell if Price < EMA200 & Price < EMA50 & RSI > 35 & Bearish Cross
+    elif curr['Close'] < curr['EMA200'] and curr['EMA20'] < curr['EMA50'] and 35 < curr['RSI'] < 60:
+        return "STRONG SELL 🔴", "error", round(curr['Close'] + (curr['ATR']*1.5), 2), round(curr['Close'] - (curr['ATR']*3), 2)
     
-    return df
+    return "NEUTRAL / HOLD ⚪", "info", 0, 0
 
-try:
-    df = fetch_data(ticker, timeframe)
-    latest = df.iloc[-1]
+# 5. UI Rendering
+df = fetch_and_process(ticker, timeframe)
+
+if df is not None:
+    signal, color, sl, target = get_signal_status(df)
     
-    price = round(float(latest['Close']), 2)
-    rsi = round(float(latest['RSI']), 2)
-    ema21 = round(float(latest['EMA_21']), 2)
-    ema50 = round(float(latest['EMA_50']), 2)
-    atr = round(float(latest['ATR']), 2)
-    macd = float(latest['MACD'])
-    macd_sig = float(latest['MACD_Signal'])
-
-    # --- Strict Signal Generation Engine ---
-    signal = "NEUTRAL ⚪"
-    status_type = "info"
-    sl = 0.0
-    target = 0.0
-
-    # Bullish Conditions
-    bullish_trend = price > ema21 and ema21 > ema50
-    bullish_macd = macd > macd_sig
+    # Layout
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Live Price", f"{df['Close'].iloc[-1]:.2f}")
+    col2.metric("RSI", f"{df['RSI'].iloc[-1]:.2f}")
+    col3.metric("ATR Volatility", f"{df['ATR'].iloc[-1]:.2f}")
     
-    # Bearish Conditions
-    bearish_trend = price < ema21 and ema21 < ema50
-    bearish_macd = macd < macd_sig
-
-    if bullish_trend and bullish_macd and (45 <= rsi < 70):
-        signal = "STRONG BULLISH BUY 🟢"
-        status_type = "success"
-        sl = round(price - (1.5 * atr), 2)
-        target = round(price + (3.0 * atr), 2)
-
-    elif bearish_trend and bearish_macd and (30 < rsi <= 55):
-        signal = "STRONG BEARISH SELL 🔴"
-        status_type = "error"
-        sl = round(price + (1.5 * atr), 2)
-        target = round(price - (3.0 * atr), 2)
-
-    # Oversold / Overbought Protection Blockers
-    elif rsi <= 30:
-        signal = "OVERSOLD - NO SELL (WAIT FOR REVERSAL) ⚠️"
-        status_type = "warning"
-    elif rsi >= 70:
-        signal = "OVERBOUGHT - NO BUY (WAIT FOR PULLBACK) ⚠️"
-        status_type = "warning"
-
-    # --- UI Rendering ---
-    st.subheader(f"Asset: {selected_asset_name} ({timeframe})")
-    st.metric("Live Market Price", f"${price}")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("RSI (14)", rsi)
-    c2.metric("EMA 21", ema21)
-    c3.metric("EMA 50", ema50)
-    c4.metric("ATR Volatility", atr)
-
     st.markdown("---")
+    if color == "success": st.success(f"### {signal}")
+    elif color == "error": st.error(f"### {signal}")
+    else: st.info(f"### {signal}")
+    
+    if sl > 0:
+        c1, c2 = st.columns(2)
+        c1.metric("Suggested Stop Loss", f"{sl}")
+        c2.metric("Target (1:2 R:R)", f"{target}")
 
-    # Display Signal Box
-    if status_type == "success":
-        st.success(f"**SIGNAL:** {signal}")
-    elif status_type == "error":
-        st.error(f"**SIGNAL:** {signal}")
-    elif status_type == "warning":
-        st.warning(f"**SIGNAL:** {signal}")
-    else:
-        st.info(f"**SIGNAL:** {signal}")
+    # Plot
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']))
+    fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Display Trade Execution Details
-    if "BUY" in signal or "SELL" in signal:
-        st.subheader("🛡️ Dynamic Risk Management (1:2 R:R Ratio)")
-        res1, res2 = st.columns(2)
-        res1.metric("Suggested Stop-Loss", f"${sl}")
-        res2.metric("Target Price", f"${target}")
-
-except Exception as e:
-    st.error(f"Data load karne me problem hui. Details: {e}")
+else:
+    st.error("Data load failed. Check Asset selection or Network.")
