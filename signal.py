@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import pyotp
 from streamlit_autorefresh import st_autorefresh
 from SmartApi import SmartConnect
 
@@ -16,21 +17,23 @@ st.sidebar.header("Angel One API Login")
 api_key = st.sidebar.text_input("API Key", type="password")
 client_id = st.sidebar.text_input("Client ID / User ID")
 password = st.sidebar.text_input("MPIN / Password", type="password")
-totp_code = st.sidebar.text_input("TOTP Code")
+totp_secret = st.sidebar.text_input("TOTP Secret Key (e.g. 6WTKYR...)")
 
 if st.sidebar.button("Fetch Live Signal"):
-    if api_key and client_id and password and totp_code:
+    if api_key and client_id and password and totp_secret:
         try:
+            # Auto Generate 6-Digit TOTP using Secret Key
+            totp = pyotp.TOTP(totp_secret.replace(" ", "")).now()
+
             # Angel One Connection Setup
             smartApi = SmartConnect(api_key=api_key)
-            data = smartApi.generateSession(client_id, password, totp_code)
+            data = smartApi.generateSession(client_id, password, totp)
             
-            # Example: Fetching Nifty 50 Spot LTP (Token: 99926000, Exchange: NSE)
+            # Fetching Nifty 50 Spot LTP (Token: 99926000, Exchange: NSE)
             ltp_data = smartApi.ltpData("NSE", "NIFTY", "99926000")
             latest_price = float(ltp_data['data']['ltp'])
 
-            # Historical data placeholder or Live Calculation
-            # For accurate EMA, last 30 tick points maintained in session state
+            # Maintaining last 30 prices in session state for EMA
             if 'price_history' not in st.session_state:
                 st.session_state['price_history'] = [latest_price] * 30
             else:
