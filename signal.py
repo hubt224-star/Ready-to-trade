@@ -5,9 +5,9 @@ import pyotp
 from streamlit_autorefresh import st_autorefresh
 from SmartApi import SmartConnect
 
-st.set_page_config(page_title="Angel One Trading Signal", layout="wide")
+st.set_page_config(page_title="Pro Trading Signal Dashboard", layout="wide")
 
-st.title("📈 Live Options Trading Signal Dashboard")
+st.title("📈 Pro Options Signal Dashboard (EMA + RSI Filter)")
 
 # Session State Initialization
 if "connected" not in st.session_state:
@@ -49,91 +49,116 @@ if submit_btn:
     else:
         st.sidebar.warning("Kripya saare fields bharein.")
 
-# Signal Generator Helper Function
-def calculate_signal(history, step_size, sl_pts, target_pts):
-    if len(history) < 5:
-        return "WAIT / FETCHING DATA", "N/A", 0, 0
+# High Accuracy Indicator Calculation
+def calculate_advanced_signal(history, step_size, sl_pts, target_pts):
+    # Minimum 14 data points required for accurate RSI
+    if len(history) < 14:
+        return "WAIT / COLLECTING DATA", "N/A", 0, 0, 0, "Neutral"
     
     current_price = history[-1]
     atm_strike = round(current_price / step_size) * step_size
     
     df = pd.DataFrame(history, columns=['Price'])
-    ema_short = df['Price'].ewm(span=3, adjust=False).mean().iloc[-1]
-    ema_long = df['Price'].ewm(span=8, adjust=False).mean().iloc[-1]
     
-    if ema_short > ema_long:
-        signal = "BUY CALL (CE)"
+    # 1. Exponential Moving Averages (EMA 5 & EMA 20)
+    ema_short = df['Price'].ewm(span=5, adjust=False).mean().iloc[-1]
+    ema_long = df['Price'].ewm(span=20, adjust=False).mean().iloc[-1]
+    
+    # 2. Relative Strength Index (RSI 14)
+    delta = df['Price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    
+    # Avoid division by zero
+    loss_val = loss.iloc[-1] if loss.iloc[-1] != 0 else 0.001
+    rs = gain.iloc[-1] / loss_val
+    rsi = 100 - (100 / (1 + rs))
+    rsi = round(rsi, 2)
+    
+    # 3. Multi-Condition Filtering Logic
+    # Strong CALL Rule: EMA 5 > EMA 20 AND RSI > 55 (Momentum Building) AND RSI < 70 (Not Overbought)
+    if (ema_short > ema_long) and (rsi > 55) and (rsi < 70):
+        signal = "STRONG BUY CALL (CE)"
         strike = f"{atm_strike} CE"
         sl = round(current_price - sl_pts, 2)
         target = round(current_price + target_pts, 2)
-    elif ema_short < ema_long:
-        signal = "BUY PUT (PE)"
+        trend = "BULLISH 🚀"
+        
+    # Strong PUT Rule: EMA 5 < EMA 20 AND RSI < 45 (Bearish Momentum) AND RSI > 30 (Not Oversold)
+    elif (ema_short < ema_long) and (rsi < 45) and (rsi > 30):
+        signal = "STRONG BUY PUT (PE)"
         strike = f"{atm_strike} PE"
         sl = round(current_price + sl_pts, 2)
         target = round(current_price - target_pts, 2)
+        trend = "BEARISH 🔻"
+        
+    # Sideways / Risk Zone Avoidance Filter
     else:
-        signal = "WAIT / NO SIGNAL"
+        signal = "NO SIGNAL (Sideways/Market Filtered)"
         strike = "N/A"
         sl, target = 0, 0
+        trend = "SIDEWAYS ⏸️"
         
-    return signal, strike, sl, target
+    return signal, strike, sl, target, rsi, trend
 
 # Live Data Fetch & Logic
 if st.session_state.connected:
     st_autorefresh(interval=5000, key="data_refresh") # 5 Sec Refresh
-    st.success("Live Connection Active!")
+    st.success("Live High-Accuracy Feed Active!")
     
     try:
         smartApi = st.session_state.smartApi
         
-        # 1. Fetch Nifty 50 Data (NSE, Token: 99926000)
+        # 1. Fetch Nifty 50 Data
         nifty_data = smartApi.ltpData("NSE", "NIFTY-EQ", "99926000")
-        # 2. Fetch Sensex Data (BSE, Token: 1)
+        # 2. Fetch Sensex Data
         sensex_data = smartApi.ltpData("BSE", "SENSEX-EQ", "1")
         
         # --- NIFTY SECTION ---
-        st.subheader("📊 NIFTY 50 Live Signal")
+        st.subheader("📊 NIFTY 50 (High Accuracy Filter)")
         if nifty_data and nifty_data.get('status'):
             n_price = float(nifty_data['data']['ltp'])
             st.session_state.nifty_history.append(n_price)
-            if len(st.session_state.nifty_history) > 50:
+            if len(st.session_state.nifty_history) > 100:
                 st.session_state.nifty_history.pop(0)
 
-            n_sig, n_strike, n_sl, n_tgt = calculate_signal(
-                st.session_state.nifty_history, step_size=50, sl_pts=25, target_pts=50
+            n_sig, n_strike, n_sl, n_tgt, n_rsi, n_trend = calculate_advanced_signal(
+                st.session_state.nifty_history, step_size=50, sl_pts=20, target_pts=45
             )
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("NIFTY Live Price", f"₹{n_price}")
-            col2.metric("Signal Status", n_sig)
-            col3.metric("Recommended Strike", f"NIFTY {n_strike}")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("NIFTY Price", f"₹{n_price}")
+            col2.metric("RSI (14)", f"{n_rsi}")
+            col3.metric("Trend", n_trend)
+            col4.metric("Recommended Strike", f"NIFTY {n_strike}")
             
-            st.caption(f"🎯 **NIFTY Levels:** SL: ₹{n_sl} | Target: ₹{n_tgt}")
+            st.info(f"📌 **Signal:** {n_sig} | **SL:** ₹{n_sl} | **Target:** ₹{n_tgt}")
         else:
-            st.info("Nifty data fetch nahi ho raha hai.")
+            st.info("Nifty data fetch ho raha hai...")
 
         st.markdown("---")
 
         # --- SENSEX SECTION ---
-        st.subheader("📊 SENSEX Live Signal")
+        st.subheader("📊 SENSEX (High Accuracy Filter)")
         if sensex_data and sensex_data.get('status'):
             s_price = float(sensex_data['data']['ltp'])
             st.session_state.sensex_history.append(s_price)
-            if len(st.session_state.sensex_history) > 50:
+            if len(st.session_state.sensex_history) > 100:
                 st.session_state.sensex_history.pop(0)
 
-            s_sig, s_strike, s_sl, s_tgt = calculate_signal(
-                st.session_state.sensex_history, step_size=100, sl_pts=80, target_pts=150
+            s_sig, s_strike, s_sl, s_tgt, s_rsi, s_trend = calculate_advanced_signal(
+                st.session_state.sensex_history, step_size=100, sl_pts=70, target_pts=140
             )
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("SENSEX Live Price", f"₹{s_price}")
-            col2.metric("Signal Status", s_sig)
-            col3.metric("Recommended Strike", f"SENSEX {s_strike}")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("SENSEX Price", f"₹{s_price}")
+            col2.metric("RSI (14)", f"{s_rsi}")
+            col3.metric("Trend", s_trend)
+            col4.metric("Recommended Strike", f"SENSEX {s_strike}")
             
-            st.caption(f"🎯 **SENSEX Levels:** SL: ₹{s_sl} | Target: ₹{s_tgt}")
+            st.info(f"📌 **Signal:** {s_sig} | **SL:** ₹{s_sl} | **Target:** ₹{s_tgt}")
         else:
-            st.info("Sensex data fetch nahi ho raha hai.")
+            st.info("Sensex data fetch ho raha hai...")
 
     except Exception as e:
         st.error(f"Data Fetching Error: {e}")
