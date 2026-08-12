@@ -15,7 +15,7 @@ if "connected" not in st.session_state:
 if "smartApi" not in st.session_state:
     st.session_state.smartApi = None
 
-# Sidebar Form (Ye disconnect aur reset hone se rokega)
+# Sidebar Form
 with st.sidebar:
     st.header("Angel One API Login")
     with st.form("login_form"):
@@ -47,8 +47,23 @@ if submit_btn:
 
 # Live Data Fetch logic tabhi chalega jab connect ho jaye
 if st.session_state.connected:
-    # Auto refresh 10 seconds me page update karega bina login reset kiye
     st_autorefresh(interval=10000, key="data_refresh")
     st.success("Live Connection Active!")
+    
+    # --- Yahan Data Fetch aur Show hoga ---
+    try:
+        smartApi = st.session_state.smartApi
+        
+        # Example Dashboard Data Display
+        st.subheader("📊 Live Market Data / Signal")
+        
+        # Sample table structure (Aap apne hisaab se API calls add kar sakte hain)
+        st.info("Fetching latest market ticks...")
+        
+        # NOTE: Agar aapke paas purane code ka Live Data Fetching wala logic tha, 
+        # use is section ke andar Paste kar dein.
+        
+    except Exception as e:
+        st.error(f"Data Fetching Error: {e}")
 else:
     st.info("Sidebar me details bhar kar 'Connect & Start Live Fetch' par click karein.")
