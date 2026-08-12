@@ -1,27 +1,49 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
 
-# Streamlit Page Setup
-st.set_page_config(page_title="Institutional Options Engine", layout="wide")
+# Page configuration
+st.set_page_config(page_title="High-Accuracy Trading Dashboard", layout="wide")
 
-st.title("⚡ Institutional Options Signal Engine (NIFTY & SENSEX)")
-st.caption("Advanced Confluence Engine: Trend + Momentum + Bollinger Squeeze + Scoring System")
+st.title("🎯 Institutional Options Signal Engine (NIFTY & SENSEX)")
+st.caption("Pure Engine: EMA 9/21/50/200 + RSI + MACD + ATR (Zero Deployment Error)")
 
-# Sidebar
+# Sidebar Settings
 st.sidebar.header("⚙️ Execution Settings")
 timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
-min_score = st.sidebar.slider("Min Signal Confidence Threshold (%)", 50, 90, 75)
+min_score = st.sidebar.slider("Min Signal Confidence Threshold (%)", 50, 90, 70)
 
 INDICES = {
     "NIFTY 50": "^NSEI",
     "SENSEX": "^BSESN"
 }
 
+# --- Pure Pandas Technical Indicators (No External TA Library Needed) ---
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_atr(df, period=14):
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
+
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    macd_hist = macd_line - signal_line
+    return macd_line, signal_line, macd_hist
+
 @st.cache_data(ttl=60)
-def fetch_advanced_data(symbol, timeframe="15m"):
+def fetch_and_calculate_data(symbol, timeframe="15m"):
     try:
         df = yf.download(tickers=symbol, period="5d", interval=timeframe, progress=False)
         if df.empty:
@@ -30,112 +52,97 @@ def fetch_advanced_data(symbol, timeframe="15m"):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # 1. Trend Indicators
-        df['EMA_20'] = ta.ema(df['Close'], length=20)
-        df['EMA_50'] = ta.ema(df['Close'], length=50)
-        df['EMA_200'] = ta.ema(df['Close'], length=200)
-
-        # 2. Momentum Indicators
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
-        if macd is not None:
-            df['MACD'] = macd['MACD_12_26_9']
-            df['MACD_Signal'] = macd['MACDs_12_26_9']
-            df['MACD_Hist'] = macd['MACDh_12_26_9']
-
-        # 3. Volatility & Breakout (Bollinger Bands)
-        bbands = ta.bbands(df['Close'], length=20, std=2)
-        if bbands is not None:
-            df['BBL'] = bbands['BBL_20_2.0']
-            df['BBU'] = bbands['BBU_20_2.0']
-            df['BBM'] = bbands['BBM_20_2.0']
-            df['Bandwidth'] = (df['BBU'] - df['BBL']) / df['BBM']
-
-        # 4. Volatility / Stoploss
-        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+        # Pure Indicators Calculation
+        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        
+        df['RSI'] = calculate_rsi(df['Close'], 14)
+        df['ATR'] = calculate_atr(df, 14)
+        
+        macd_line, signal_line, macd_hist = calculate_macd(df['Close'])
+        df['MACD_Hist'] = macd_hist
 
         return df
     except Exception as e:
         return None
 
-def calculate_confidence_score(df):
+def calculate_signal_score(df):
     if df is None or len(df) < 50:
-        return 0, "NO DATA", "NEUTRAL", 0, 0, 0, 0, 0
+        return 0, "DATA LOADING...", "NEUTRAL", 0, 0, 0, 0, 0
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     
-    price = round(latest['Close'], 2)
-    rsi = round(latest['RSI'], 2) if not pd.isna(latest['RSI']) else 50
-    atr = round(latest['ATR'], 2) if not pd.isna(latest['ATR']) else 10
+    price = round(float(latest['Close']), 2)
+    rsi = round(float(latest['RSI']), 2) if not pd.isna(latest['RSI']) else 50
+    atr = round(float(latest['ATR']), 2) if not pd.isna(latest['ATR']) else 10
 
     bull_score = 0
     bear_score = 0
 
-    # Test 1: Trend Alignment (25 Points)
-    if price > latest['EMA_50'] and latest['EMA_20'] > latest['EMA_50']:
+    # 1. Short-Term Crossover (25 Pts)
+    if latest['EMA_9'] > latest['EMA_21']:
         bull_score += 25
-    elif price < latest['EMA_50'] and latest['EMA_20'] < latest['EMA_50']:
+    else:
         bear_score += 25
 
-    # Test 2: Major Trend / Institutional Direction (20 Points)
+    # 2. Medium Trend (25 Pts)
+    if price > latest['EMA_50']:
+        bull_score += 25
+    else:
+        bear_score += 25
+
+    # 3. Institutional Trend (20 Pts)
     if price > latest['EMA_200']:
         bull_score += 20
     else:
         bear_score += 20
 
-    # Test 3: RSI Momentum Zone (20 Points)
-    if 55 <= rsi <= 70:
-        bull_score += 20
-    elif 30 <= rsi <= 45:
-        bear_score += 20
-
-    # Test 4: MACD Histogram Acceleration (20 Points)
-    if latest['MACD_Hist'] > 0 and latest['MACD_Hist'] > prev['MACD_Hist']:
-        bull_score += 20
-    elif latest['MACD_Hist'] < 0 and latest['MACD_Hist'] < prev['MACD_Hist']:
-        bear_score += 20
-
-    # Test 5: Volatility / Bollinger Expansion (15 Points)
-    if latest['Bandwidth'] > prev['Bandwidth'] and price > latest['BBU']:
+    # 4. RSI Momentum (15 Pts)
+    if 52 <= rsi <= 70:
         bull_score += 15
-    elif latest['Bandwidth'] > prev['Bandwidth'] and price < latest['BBL']:
+    elif 30 <= rsi <= 48:
         bear_score += 15
 
-    # Final Signal Determination
-    signal = "NEUTRAL (WAIT FOR BREAKOUT) ⏳"
-    confidence = max(bull_score, bear_score)
+    # 5. MACD Momentum (15 Pts)
+    if latest['MACD_Hist'] > 0:
+        bull_score += 15
+    else:
+        bear_score += 15
+
+    # Verdict
+    signal = "NEUTRAL / NO CLEAR BREAKOUT ⏹️"
     trade_type = "NEUTRAL"
     sl, target = 0.0, 0.0
 
     if bull_score >= min_score:
-        signal = f"STRONG CALL BUY (CE) 🔥 [{bull_score}% Match]"
+        signal = f"STRONG CALL BUY (CE) 🟢 [{bull_score}% Match]"
         trade_type = "CALL"
         sl = round(price - (1.5 * atr), 2)
         target = round(price + (3.0 * atr), 2)
     elif bear_score >= min_score:
-        signal = f"STRONG PUT BUY (PE) ⚡ [{bear_score}% Match]"
+        signal = f"STRONG PUT BUY (PE) 🔴 [{bear_score}% Match]"
         trade_type = "PUT"
         sl = round(price + (1.5 * atr), 2)
         target = round(price - (3.0 * atr), 2)
 
-    return confidence, signal, trade_type, price, rsi, atr, sl, target
+    return max(bull_score, bear_score), signal, trade_type, price, rsi, atr, sl, target
 
-def render_index_card(name, symbol):
-    df = fetch_advanced_data(symbol, timeframe)
+def display_index_card(name, symbol):
+    df = fetch_and_calculate_data(symbol, timeframe)
     
     if df is not None and not df.empty:
-        confidence, signal, trade_type, price, rsi, atr, sl, target = calculate_confidence_score(df)
+        score, signal, trade_type, price, rsi, atr, sl, target = calculate_signal_score(df)
         
         st.subheader(f"📌 {name}")
         
-        # Top Metrics
         m1, m2, m3 = st.columns(3)
         m1.metric("Live Price", f"₹{price}")
         m2.metric("RSI (14)", f"{rsi}")
         m3.metric("ATR Volatility", f"₹{atr}")
 
-        # Signal Display Box
         if trade_type == "CALL":
             st.success(f"**SIGNAL:** {signal}")
         elif trade_type == "PUT":
@@ -143,29 +150,26 @@ def render_index_card(name, symbol):
         else:
             st.warning(f"**SIGNAL:** {signal}")
 
-        # Risk Management Card
         if sl > 0 and target > 0:
-            st.markdown("##### 🛡️ Trade Execution & Risk Management")
-            rc1, rc2, rc3 = st.columns(3)
+            st.markdown("##### 🛡️ Execution Risk Parameters")
+            rc1, rc2 = st.columns(2)
             rc1.metric("Suggested Stop-Loss", f"₹{sl}")
             rc2.metric("Target (1:2 R:R)", f"₹{target}")
-            rc3.metric("Risk-Reward Ratio", "1 : 2.0")
 
-        # Deep Breakdown Expander
-        with st.expander("🔍 View Technical Indicator Matrix"):
+        with st.expander(f"Detailed Matrix for {name}"):
             latest = df.iloc[-1]
-            st.write(f"- **20 EMA vs 50 EMA:** {'Bullish 🟢' if latest['EMA_20'] > latest['EMA_50'] else 'Bearish 🔴'}")
-            st.write(f"- **200 EMA Trend:** {'Above 200 EMA (Uptrend)' if price > latest['EMA_200'] else 'Below 200 EMA (Downtrend)'}")
-            st.write(f"- **MACD Histogram:** {'Positive Acceleration 🟢' if latest['MACD_Hist'] > 0 else 'Negative Acceleration 🔴'}")
-            st.dataframe(df[['Close', 'EMA_20', 'EMA_50', 'EMA_200', 'RSI', 'MACD', 'ATR']].tail(5), use_container_width=True)
+            st.write(f"- **EMA 9 vs 21:** {'Bullish 🟢' if latest['EMA_9'] > latest['EMA_21'] else 'Bearish 🔴'}")
+            st.write(f"- **50 EMA Filter:** {'Price Above 50 EMA' if price > latest['EMA_50'] else 'Price Below 50 EMA'}")
+            st.write(f"- **200 EMA Filter:** {'Price Above 200 EMA' if price > latest['EMA_200'] else 'Price Below 200 EMA'}")
+            st.dataframe(df[['Close', 'EMA_9', 'EMA_21', 'EMA_50', 'RSI', 'ATR']].tail(5), use_container_width=True)
     else:
-        st.error(f"{name} data stream connection failed.")
+        st.error(f"{name} stream currently unavailable.")
 
-# Main Layout
-col_nifty, col_sensex = st.columns(2)
+# Main Display
+col1, col2 = st.columns(2)
 
-with col_nifty:
-    render_index_card("NIFTY 50", INDICES["NIFTY 50"])
+with col1:
+    display_index_card("NIFTY 50", INDICES["NIFTY 50"])
 
-with col_sensex:
-    render_index_card("SENSEX", INDICES["SENSEX"])
+with col2:
+    display_index_card("SENSEX", INDICES["SENSEX"])
