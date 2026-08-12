@@ -1,6 +1,7 @@
 streamlit
 yfinance
 pandas
-pandas-ta
 numpy
+ta
+git+https://github.com/twopirllc/pandas-ta.git@development
 
