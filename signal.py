@@ -1,166 +1,171 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
+import pandas_ta as ta
 import numpy as np
-import pyotp
-from streamlit_autorefresh import st_autorefresh
-from SmartApi import SmartConnect
 
-st.set_page_config(page_title="Pro Trading Signal Dashboard", layout="wide")
+# Streamlit Page Setup
+st.set_page_config(page_title="Institutional Options Engine", layout="wide")
 
-st.title("📈 Pro Options Signal Dashboard (EMA + RSI Filter)")
+st.title("⚡ Institutional Options Signal Engine (NIFTY & SENSEX)")
+st.caption("Advanced Confluence Engine: Trend + Momentum + Bollinger Squeeze + Scoring System")
 
-# Session State Initialization
-if "connected" not in st.session_state:
-    st.session_state.connected = False
-if "smartApi" not in st.session_state:
-    st.session_state.smartApi = None
-if "nifty_history" not in st.session_state:
-    st.session_state.nifty_history = []
-if "sensex_history" not in st.session_state:
-    st.session_state.sensex_history = []
+# Sidebar
+st.sidebar.header("⚙️ Execution Settings")
+timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
+min_score = st.sidebar.slider("Min Signal Confidence Threshold (%)", 50, 90, 75)
 
-# Sidebar Form
-with st.sidebar:
-    st.header("Angel One API Login")
-    with st.form("login_form"):
-        api_key = st.text_input("API Key", type="password")
-        client_id = st.text_input("Client ID / User ID")
-        password = st.text_input("MPIN / Password", type="password")
-        totp_secret = st.text_input("TOTP Secret Key")
-        
-        submit_btn = st.form_submit_button("Connect & Start Live Fetch")
+INDICES = {
+    "NIFTY 50": "^NSEI",
+    "SENSEX": "^BSESN"
+}
 
-if submit_btn:
-    if api_key and client_id and password and totp_secret:
-        try:
-            totp = pyotp.TOTP(totp_secret.replace(" ", "")).now()
-            smartApi = SmartConnect(api_key=api_key)
-            data = smartApi.generateSession(client_id, password, totp)
-            
-            if data and data.get('status'):
-                st.session_state.smartApi = smartApi
-                st.session_state.connected = True
-                st.sidebar.success("Connected Successfully!")
-            else:
-                msg = data.get('message', 'Login Failed') if data else 'No response'
-                st.sidebar.error(f"Failed: {msg}")
-        except Exception as e:
-            st.sidebar.error(f"Error: {e}")
-    else:
-        st.sidebar.warning("Kripya saare fields bharein.")
-
-# High Accuracy Indicator Calculation
-def calculate_advanced_signal(history, step_size, sl_pts, target_pts):
-    # Minimum 14 data points required for accurate RSI
-    if len(history) < 14:
-        return "WAIT / COLLECTING DATA", "N/A", 0, 0, 0, "Neutral"
-    
-    current_price = history[-1]
-    atm_strike = round(current_price / step_size) * step_size
-    
-    df = pd.DataFrame(history, columns=['Price'])
-    
-    # 1. Exponential Moving Averages (EMA 5 & EMA 20)
-    ema_short = df['Price'].ewm(span=5, adjust=False).mean().iloc[-1]
-    ema_long = df['Price'].ewm(span=20, adjust=False).mean().iloc[-1]
-    
-    # 2. Relative Strength Index (RSI 14)
-    delta = df['Price'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    
-    # Avoid division by zero
-    loss_val = loss.iloc[-1] if loss.iloc[-1] != 0 else 0.001
-    rs = gain.iloc[-1] / loss_val
-    rsi = 100 - (100 / (1 + rs))
-    rsi = round(rsi, 2)
-    
-    # 3. Multi-Condition Filtering Logic
-    # Strong CALL Rule: EMA 5 > EMA 20 AND RSI > 55 (Momentum Building) AND RSI < 70 (Not Overbought)
-    if (ema_short > ema_long) and (rsi > 55) and (rsi < 70):
-        signal = "STRONG BUY CALL (CE)"
-        strike = f"{atm_strike} CE"
-        sl = round(current_price - sl_pts, 2)
-        target = round(current_price + target_pts, 2)
-        trend = "BULLISH 🚀"
-        
-    # Strong PUT Rule: EMA 5 < EMA 20 AND RSI < 45 (Bearish Momentum) AND RSI > 30 (Not Oversold)
-    elif (ema_short < ema_long) and (rsi < 45) and (rsi > 30):
-        signal = "STRONG BUY PUT (PE)"
-        strike = f"{atm_strike} PE"
-        sl = round(current_price + sl_pts, 2)
-        target = round(current_price - target_pts, 2)
-        trend = "BEARISH 🔻"
-        
-    # Sideways / Risk Zone Avoidance Filter
-    else:
-        signal = "NO SIGNAL (Sideways/Market Filtered)"
-        strike = "N/A"
-        sl, target = 0, 0
-        trend = "SIDEWAYS ⏸️"
-        
-    return signal, strike, sl, target, rsi, trend
-
-# Live Data Fetch & Logic
-if st.session_state.connected:
-    st_autorefresh(interval=5000, key="data_refresh") # 5 Sec Refresh
-    st.success("Live High-Accuracy Feed Active!")
-    
+@st.cache_data(ttl=60)
+def fetch_advanced_data(symbol, timeframe="15m"):
     try:
-        smartApi = st.session_state.smartApi
+        df = yf.download(tickers=symbol, period="5d", interval=timeframe, progress=False)
+        if df.empty:
+            return None
         
-        # 1. Fetch Nifty 50 Data
-        nifty_data = smartApi.ltpData("NSE", "NIFTY-EQ", "99926000")
-        # 2. Fetch Sensex Data
-        sensex_data = smartApi.ltpData("BSE", "SENSEX-EQ", "1")
-        
-        # --- NIFTY SECTION ---
-        st.subheader("📊 NIFTY 50 (High Accuracy Filter)")
-        if nifty_data and nifty_data.get('status'):
-            n_price = float(nifty_data['data']['ltp'])
-            st.session_state.nifty_history.append(n_price)
-            if len(st.session_state.nifty_history) > 100:
-                st.session_state.nifty_history.pop(0)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-            n_sig, n_strike, n_sl, n_tgt, n_rsi, n_trend = calculate_advanced_signal(
-                st.session_state.nifty_history, step_size=50, sl_pts=20, target_pts=45
-            )
+        # 1. Trend Indicators
+        df['EMA_20'] = ta.ema(df['Close'], length=20)
+        df['EMA_50'] = ta.ema(df['Close'], length=50)
+        df['EMA_200'] = ta.ema(df['Close'], length=200)
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("NIFTY Price", f"₹{n_price}")
-            col2.metric("RSI (14)", f"{n_rsi}")
-            col3.metric("Trend", n_trend)
-            col4.metric("Recommended Strike", f"NIFTY {n_strike}")
-            
-            st.info(f"📌 **Signal:** {n_sig} | **SL:** ₹{n_sl} | **Target:** ₹{n_tgt}")
-        else:
-            st.info("Nifty data fetch ho raha hai...")
+        # 2. Momentum Indicators
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        if macd is not None:
+            df['MACD'] = macd['MACD_12_26_9']
+            df['MACD_Signal'] = macd['MACDs_12_26_9']
+            df['MACD_Hist'] = macd['MACDh_12_26_9']
 
-        st.markdown("---")
+        # 3. Volatility & Breakout (Bollinger Bands)
+        bbands = ta.bbands(df['Close'], length=20, std=2)
+        if bbands is not None:
+            df['BBL'] = bbands['BBL_20_2.0']
+            df['BBU'] = bbands['BBU_20_2.0']
+            df['BBM'] = bbands['BBM_20_2.0']
+            df['Bandwidth'] = (df['BBU'] - df['BBL']) / df['BBM']
 
-        # --- SENSEX SECTION ---
-        st.subheader("📊 SENSEX (High Accuracy Filter)")
-        if sensex_data and sensex_data.get('status'):
-            s_price = float(sensex_data['data']['ltp'])
-            st.session_state.sensex_history.append(s_price)
-            if len(st.session_state.sensex_history) > 100:
-                st.session_state.sensex_history.pop(0)
+        # 4. Volatility / Stoploss
+        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
 
-            s_sig, s_strike, s_sl, s_tgt, s_rsi, s_trend = calculate_advanced_signal(
-                st.session_state.sensex_history, step_size=100, sl_pts=70, target_pts=140
-            )
-
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("SENSEX Price", f"₹{s_price}")
-            col2.metric("RSI (14)", f"{s_rsi}")
-            col3.metric("Trend", s_trend)
-            col4.metric("Recommended Strike", f"SENSEX {s_strike}")
-            
-            st.info(f"📌 **Signal:** {s_sig} | **SL:** ₹{s_sl} | **Target:** ₹{s_tgt}")
-        else:
-            st.info("Sensex data fetch ho raha hai...")
-
+        return df
     except Exception as e:
-        st.error(f"Data Fetching Error: {e}")
-else:
-    st.info("Sidebar me details bhar kar 'Connect & Start Live Fetch' par click karein.")
+        return None
+
+def calculate_confidence_score(df):
+    if df is None or len(df) < 50:
+        return 0, "NO DATA", "NEUTRAL", 0, 0, 0, 0, 0
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    price = round(latest['Close'], 2)
+    rsi = round(latest['RSI'], 2) if not pd.isna(latest['RSI']) else 50
+    atr = round(latest['ATR'], 2) if not pd.isna(latest['ATR']) else 10
+
+    bull_score = 0
+    bear_score = 0
+
+    # Test 1: Trend Alignment (25 Points)
+    if price > latest['EMA_50'] and latest['EMA_20'] > latest['EMA_50']:
+        bull_score += 25
+    elif price < latest['EMA_50'] and latest['EMA_20'] < latest['EMA_50']:
+        bear_score += 25
+
+    # Test 2: Major Trend / Institutional Direction (20 Points)
+    if price > latest['EMA_200']:
+        bull_score += 20
+    else:
+        bear_score += 20
+
+    # Test 3: RSI Momentum Zone (20 Points)
+    if 55 <= rsi <= 70:
+        bull_score += 20
+    elif 30 <= rsi <= 45:
+        bear_score += 20
+
+    # Test 4: MACD Histogram Acceleration (20 Points)
+    if latest['MACD_Hist'] > 0 and latest['MACD_Hist'] > prev['MACD_Hist']:
+        bull_score += 20
+    elif latest['MACD_Hist'] < 0 and latest['MACD_Hist'] < prev['MACD_Hist']:
+        bear_score += 20
+
+    # Test 5: Volatility / Bollinger Expansion (15 Points)
+    if latest['Bandwidth'] > prev['Bandwidth'] and price > latest['BBU']:
+        bull_score += 15
+    elif latest['Bandwidth'] > prev['Bandwidth'] and price < latest['BBL']:
+        bear_score += 15
+
+    # Final Signal Determination
+    signal = "NEUTRAL (WAIT FOR BREAKOUT) ⏳"
+    confidence = max(bull_score, bear_score)
+    trade_type = "NEUTRAL"
+    sl, target = 0.0, 0.0
+
+    if bull_score >= min_score:
+        signal = f"STRONG CALL BUY (CE) 🔥 [{bull_score}% Match]"
+        trade_type = "CALL"
+        sl = round(price - (1.5 * atr), 2)
+        target = round(price + (3.0 * atr), 2)
+    elif bear_score >= min_score:
+        signal = f"STRONG PUT BUY (PE) ⚡ [{bear_score}% Match]"
+        trade_type = "PUT"
+        sl = round(price + (1.5 * atr), 2)
+        target = round(price - (3.0 * atr), 2)
+
+    return confidence, signal, trade_type, price, rsi, atr, sl, target
+
+def render_index_card(name, symbol):
+    df = fetch_advanced_data(symbol, timeframe)
+    
+    if df is not None and not df.empty:
+        confidence, signal, trade_type, price, rsi, atr, sl, target = calculate_confidence_score(df)
+        
+        st.subheader(f"📌 {name}")
+        
+        # Top Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Live Price", f"₹{price}")
+        m2.metric("RSI (14)", f"{rsi}")
+        m3.metric("ATR Volatility", f"₹{atr}")
+
+        # Signal Display Box
+        if trade_type == "CALL":
+            st.success(f"**SIGNAL:** {signal}")
+        elif trade_type == "PUT":
+            st.error(f"**SIGNAL:** {signal}")
+        else:
+            st.warning(f"**SIGNAL:** {signal}")
+
+        # Risk Management Card
+        if sl > 0 and target > 0:
+            st.markdown("##### 🛡️ Trade Execution & Risk Management")
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("Suggested Stop-Loss", f"₹{sl}")
+            rc2.metric("Target (1:2 R:R)", f"₹{target}")
+            rc3.metric("Risk-Reward Ratio", "1 : 2.0")
+
+        # Deep Breakdown Expander
+        with st.expander("🔍 View Technical Indicator Matrix"):
+            latest = df.iloc[-1]
+            st.write(f"- **20 EMA vs 50 EMA:** {'Bullish 🟢' if latest['EMA_20'] > latest['EMA_50'] else 'Bearish 🔴'}")
+            st.write(f"- **200 EMA Trend:** {'Above 200 EMA (Uptrend)' if price > latest['EMA_200'] else 'Below 200 EMA (Downtrend)'}")
+            st.write(f"- **MACD Histogram:** {'Positive Acceleration 🟢' if latest['MACD_Hist'] > 0 else 'Negative Acceleration 🔴'}")
+            st.dataframe(df[['Close', 'EMA_20', 'EMA_50', 'EMA_200', 'RSI', 'MACD', 'ATR']].tail(5), use_container_width=True)
+    else:
+        st.error(f"{name} data stream connection failed.")
+
+# Main Layout
+col_nifty, col_sensex = st.columns(2)
+
+with col_nifty:
+    render_index_card("NIFTY 50", INDICES["NIFTY 50"])
+
+with col_sensex:
+    render_index_card("SENSEX", INDICES["SENSEX"])
