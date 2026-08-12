@@ -38,31 +38,38 @@ if submit_btn:
                 st.session_state.connected = True
                 st.sidebar.success("Connected Successfully!")
             else:
-                msg = data.get('message', 'Login Failed') if data else 'No response from server'
+                msg = data.get('message', 'Login Failed') if data else 'No response'
                 st.sidebar.error(f"Failed: {msg}")
         except Exception as e:
             st.sidebar.error(f"Error: {e}")
     else:
         st.sidebar.warning("Kripya saare fields bharein.")
 
-# Live Data Fetch logic tabhi chalega jab connect ho jaye
+# Live Data Fetch logic
 if st.session_state.connected:
-    st_autorefresh(interval=10000, key="data_refresh")
+    st_autorefresh(interval=5000, key="data_refresh") # Har 5 sec me refresh hoga
     st.success("Live Connection Active!")
     
-    # --- Yahan Data Fetch aur Show hoga ---
+    st.subheader("📊 Live Market Data / Signal")
+    
     try:
         smartApi = st.session_state.smartApi
         
-        # Example Dashboard Data Display
-        st.subheader("📊 Live Market Data / Signal")
+        # Nifty LTP Fetch Example
+        ltp_data = smartApi.ltpData("NSE", "NIFTY-EQ", "99926000")
         
-        # Sample table structure (Aap apne hisaab se API calls add kar sakte hain)
-        st.info("Fetching latest market ticks...")
-        
-        # NOTE: Agar aapke paas purane code ka Live Data Fetching wala logic tha, 
-        # use is section ke andar Paste kar dein.
-        
+        if ltp_data and ltp_data.get('status'):
+            price = ltp_data['data']['ltp']
+            
+            col1, col2 = st.columns(2)
+            col1.metric("NIFTY 50 Live LTP", f"₹{price}")
+            
+            # Aapka koi custom signal logic ho to yahan display kar sakte hain
+            if price > 0:
+                col2.metric("Signal Status", "BULLISH / BUY", delta="Active")
+        else:
+            st.info("Market data fetch ho raha hai... (Market open hone par live ticks dikhenge)")
+            
     except Exception as e:
         st.error(f"Data Fetching Error: {e}")
 else:
