@@ -4,13 +4,13 @@ import pandas as pd
 import numpy as np
 
 # Page Configuration
-st.set_page_config(page_title="Multi-Indicator Signal Engine", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="Institutional Signal Engine", page_icon="🎯", layout="centered")
 
-st.title("⚡ Multi-Indicator Buy/Sell Engine")
-st.caption("Includes NSE & BSE F&O, Commodities, and Equity Stocks")
+st.title("🎯 Precision Signal Engine")
+st.caption("Auto Strike Price, Entry, Target & Stop-Loss Calculator")
 
 # -------------------------------------------------------------
-# 1. Segment & Asset Selection (Sensex & Bankex Added)
+# 1. Segment & Asset Selection
 # -------------------------------------------------------------
 col1, col2 = st.columns(2)
 
@@ -20,66 +20,74 @@ with col1:
         ["Indices & F&O", "Commodities (MCX)", "Equity Stocks"]
     )
 
-# Ticker Symbols Mapping (Yahoo Finance Format)
 symbols_data = {
     "Indices & F&O": {
-        "Nifty 50": "^NSEI",
-        "Bank Nifty": "^NSEBANK",
-        "Fin Nifty": "NIFTY_FIN_SERVICE.NS",
-        "BSE Sensex": "BSESN",
-        "BSE Bankex": "BSE-BANKEX"
+        "Nifty 50": {"ticker": "^NSEI", "step": 50},
+        "Bank Nifty": {"ticker": "^NSEBANK", "step": 100},
+        "Fin Nifty": {"ticker": "NIFTY_FIN_SERVICE.NS", "step": 50},
+        "BSE Sensex": {"ticker": "BSESN", "step": 100},
+        "BSE Bankex": {"ticker": "BSE-BANKEX", "step": 100}
     },
     "Commodities (MCX)": {
-        "Crude Oil": "CL=F",
-        "Gold": "GC=F",
-        "Silver": "SI=F",
-        "Natural Gas": "NG=F"
+        "Crude Oil": {"ticker": "CL=F", "step": 50},
+        "Gold": {"ticker": "GC=F", "step": 100},
+        "Silver": {"ticker": "SI=F", "step": 500},
+        "Natural Gas": {"ticker": "NG=F", "step": 5}
     },
     "Equity Stocks": {
-        "Reliance": "RELIANCE.NS",
-        "TCS": "TCS.NS",
-        "HDFC Bank": "HDFCBANK.NS",
-        "Tata Motors": "TATAMOTORS.NS",
-        "State Bank of India": "SBIN.NS"
+        "Reliance": {"ticker": "RELIANCE.NS", "step": 20},
+        "TCS": {"ticker": "TCS.NS", "step": 50},
+        "HDFC Bank": {"ticker": "HDFCBANK.NS", "step": 20},
+        "Tata Motors": {"ticker": "TATAMOTORS.NS", "step": 10},
+        "State Bank of India": {"ticker": "SBIN.NS", "step": 10}
     }
 }
 
 with col2:
     selected_asset = st.selectbox("Select Asset", list(symbols_data[category].keys()))
 
-ticker_symbol = symbols_data[category][selected_asset]
+asset_info = symbols_data[category][selected_asset]
+ticker_symbol = asset_info["ticker"]
+strike_step = asset_info["step"]
 
 # -------------------------------------------------------------
-# 2. Technical Indicators Logic
+# 2. Indicator Calculation Logic
 # -------------------------------------------------------------
 def calculate_indicators(df):
-    # 1. EMA (9 & 21)
     df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
     
-    # 2. RSI (14)
+    # RSI Calculation
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 3. MACD
+    # MACD Calculation
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
 
-    # 4. Bollinger Bands
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['STD_20'] = df['Close'].rolling(window=20).std()
-    df['Upper_Band'] = df['SMA_20'] + (df['STD_20'] * 2)
-    df['Lower_Band'] = df['SMA_20'] - (df['STD_20'] * 2)
+    # ATR (Average True Range for Stop Loss calculation)
+    df['TR'] = np.maximum(
+        df['High'] - df['Low'],
+        np.maximum(
+            abs(df['High'] - df['Close'].shift(1)),
+            abs(df['Low'] - df['Close'].shift(1))
+        )
+    )
+    df['ATR'] = df['TR'].rolling(window=14).mean()
 
     return df
 
+# Helper Function to get ATM Strike Price
+def get_atm_strike(price, step):
+    return round(price / step) * step
+
 # -------------------------------------------------------------
-# 3. Data Fetching & Signal Execution
+# 3. Data Fetching & Trade Execution Details
 # -------------------------------------------------------------
 try:
     ticker = yf.Ticker(ticker_symbol)
@@ -90,62 +98,70 @@ try:
         
         latest = df.iloc[-1]
         live_price = latest['Close']
+        atr = latest['ATR'] if not np.isnan(latest['ATR']) else (live_price * 0.005)
 
         bullish_score = 0
         bearish_score = 0
 
-        # Indicator 1: EMA
-        if latest['EMA_9'] > latest['EMA_21']:
-            bullish_score += 1
-        else:
-            bearish_score += 1
+        if latest['EMA_9'] > latest['EMA_21']: bullish_score += 1
+        else: bearish_score += 1
 
-        # Indicator 2: RSI
-        if 50 < latest['RSI'] < 70:
-            bullish_score += 1
-        elif 30 < latest['RSI'] < 50:
-            bearish_score += 1
+        if 50 < latest['RSI'] < 70: bullish_score += 1
+        elif 30 < latest['RSI'] < 50: bearish_score += 1
 
-        # Indicator 3: MACD
-        if latest['MACD'] > latest['Signal_Line']:
-            bullish_score += 1
-        else:
-            bearish_score += 1
-
-        # Indicator 4: Bollinger Band Midline
-        if live_price > latest['SMA_20']:
-            bullish_score += 1
-        else:
-            bearish_score += 1
+        if latest['MACD'] > latest['Signal_Line']: bullish_score += 1
+        else: bearish_score += 1
 
         st.markdown("---")
-        st.metric(label=f"Live Price ({selected_asset})", value=f"{live_price:,.2f}")
-        
-        # Breakdown Indicators
-        c1, c2, c3 = st.columns(3)
-        c1.metric("RSI (14)", f"{latest['RSI']:.1f}")
-        c2.metric("EMA Trend", "Bullish" if latest['EMA_9'] > latest['EMA_21'] else "Bearish")
-        c3.metric("MACD Status", "Bullish" if latest['MACD'] > latest['Signal_Line'] else "Bearish")
+        st.metric(label=f"Live Spot Price ({selected_asset})", value=f"{live_price:,.2f}")
+
+        # ATM Strike Price Calculation
+        atm_strike = get_atm_strike(live_price, strike_step)
 
         st.markdown("---")
 
-        # Confluence Signals
-        if bullish_score >= 3:
-            st.success("🟢 STRONG BUY CALL (CE) / LONG SIGNAL")
-            st.write(f"**Score:** {bullish_score}/4 Technical Indicators Bullish hain.")
-            st.write("**Action:** Call Option Buy karein (Strict Stop Loss ke saath).")
+        # ------------------- BULLISH SIGNAL (BUY CALL) -------------------
+        if bullish_score >= 2:
+            st.success(f"🟢 BUY SIGNAL: CALL OPTION (CE) - {selected_asset}")
             
-        elif bearish_score >= 3:
-            st.error("🔴 STRONG BUY PUT (PE) / SHORT SIGNAL")
-            st.write(f"**Score:** {bearish_score}/4 Technical Indicators Bearish hain.")
-            st.write("**Action:** Put Option Buy karein (Strict Stop Loss ke saath).")
+            strike_name = f"{int(atm_strike)} CE" if category != "Commodities (MCX)" else f"{selected_asset} BUY FUT / LONG"
+            entry_spot = live_price
+            target_spot = live_price + (1.5 * atr)
+            sl_spot = live_price - (0.8 * atr)
+
+            st.subheader(f"📌 Recommended Strike: **{strike_name}**")
             
+            c1, c2, c3 = st.columns(3)
+            c1.metric("📍 Spot Entry", f"{entry_spot:,.2f}")
+            c2.metric("🎯 Target Price", f"{target_spot:,.2f}", delta=f"+{1.5*atr:.2f}")
+            c3.metric("🛑 Stop Loss (SL)", f"{sl_spot:,.2f}", delta=f"-{0.8*atr:.2f}")
+
+            st.info("💡 **Trade Tip:** Direct Index me Entry level par Aati hi Position banayein. Premium me Target ~15-20% aur SL ~8-10% rakhein.")
+
+        # ------------------- BEARISH SIGNAL (BUY PUT) -------------------
+        elif bearish_score >= 2:
+            st.error(f"🔴 BUY SIGNAL: PUT OPTION (PE) - {selected_asset}")
+            
+            strike_name = f"{int(atm_strike)} PE" if category != "Commodities (MCX)" else f"{selected_asset} SELL FUT / SHORT"
+            entry_spot = live_price
+            target_spot = live_price - (1.5 * atr)
+            sl_spot = live_price + (0.8 * atr)
+
+            st.subheader(f"📌 Recommended Strike: **{strike_name}**")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("📍 Spot Entry", f"{entry_spot:,.2f}")
+            c2.metric("🎯 Target Price", f"{target_spot:,.2f}", delta=f"-{1.5*atr:.2f}")
+            c3.metric("🛑 Stop Loss (SL)", f"{sl_spot:,.2f}", delta=f"+{0.8*atr:.2f}")
+
+            st.info("💡 **Trade Tip:** Target hitting par profit trailing SL ke sath book karein.")
+
         else:
-            st.warning("⚠️ NEUTRAL / SIDEWAYS MARKET (NO SIGNAL)")
-            st.write("**Action:** Market me clear trend nahi hai. Trading avoid karein.")
+            st.warning("⚠️ NEUTRAL / NO TRADE ZONE")
+            st.write("Market range-bound hai. Exact signal nahi ban raha, trade avoid karein.")
 
     else:
-        st.warning("Live data load nahi ho pa raha hai. Market timings/holidays check karein.")
+        st.warning("Data fetch karne me problem ho rahi hai. Market Timings check karein.")
 
 except Exception as e:
     st.error(f"Error: {e}")
